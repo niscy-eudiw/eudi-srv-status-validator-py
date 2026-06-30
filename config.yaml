@@ -1,0 +1,25 @@
+server:
+  host: "0.0.0.0"
+  port: 5000
+  # max batch request size
+  max_batch_size: 100
+
+cache:
+  # Default TTL in seconds if the Status List Token has no `ttl` or `exp` claim
+  default_ttl: 43200
+  # Maximum number of Status List URIs to keep in memory
+  max_size: 512
+
+trust_validator:
+  url: "https://trust-validator.eudiw.dev/trust"
+  timeout: 10
+
+fetch:
+  # HTTP timeout when retrieving the Status List Token JWT from the issuer
+  timeout: 10
+  # Expected Content-Type from the status list endpoint (per draft-10 §8.2)
+  expected_content_type: "application/statuslist+jwt"
+
+logging:
+  level: "DEBUG"
+  format: "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
