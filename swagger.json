@@ -1,0 +1,395 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Status List Validator",
+    "description": "Checks the validity of one or more Referenced Tokens against a Token Status List following draft-ietf-oauth-status-list-10.\n\nFlow\n1. Receive idx, uri, and validation_context (single check) or a list of such checks (batch).\n2. Fetch the Status List Token JWT from uri.\n3. Validate the x5c certificate chain via the configured trust validator, using validation_context.\n4. Verify the JWT signature using the leaf certificate public key.\n5. Decompress the lst field and extract the bit at position idx.\n6. Return whether the token is valid or invalid (revoked).\n\nResults are cached per URI (TTL driven by the JWT ttl/exp claims, default 12 h).",
+    "version": "0.1.0",
+    "contact": {
+      "name": "EUDI Wallet Team"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5000/"
+    },
+    {
+      "url": "https://localhost:5000/"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Status",
+      "description": "Token status checking"
+    },
+    {
+      "name": "Health",
+      "description": "Service health"
+    }
+  ],
+  "paths": {
+    "/status": {
+      "post": {
+        "tags": ["Status"],
+        "summary": "Check token status (single or batch)",
+        "description": "Checks the revocation/validity status of one or more Referenced Tokens identified by their index in a Token Status List JWT.\n\nSingle-check mode: send `idx`, `uri`, and `validation_context` directly in the body.\n\nBatch mode: send a `checks` array, each item containing `idx`, `uri`, and `validation_context`. Batch requests are capped at 100 items.\n\nOn the first call for a given uri the service fetches and verifies the remote JWT and caches it. Subsequent calls for the same uri are served from cache.",
+        "operationId": "checkStatus",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  { "$ref": "#/components/schemas/StatusRequest" },
+                  { "$ref": "#/components/schemas/BatchStatusRequest" }
+                ]
+              },
+              "examples": {
+                "single": {
+                  "summary": "Single check",
+                  "value": {
+                    "idx": 8577,
+                    "uri": "https://issuer.eudiw.dev/token_status_list/FC/urn:eudi:pid:1/0d703108-0546-44df-99ee-b0bcc4b42b33",
+                    "validation_context": "PIDStatus"
+                  }
+                },
+                "batch": {
+                  "summary": "Batch check",
+                  "value": {
+                    "checks": [
+                      {
+                        "idx": 8577,
+                        "uri": "https://issuer.eudiw.dev/token_status_list/FC/urn:eudi:pid:1/0d703108-0546-44df-99ee-b0bcc4b42b33",
+                        "validation_context": "PIDStatus"
+                      },
+                      {
+                        "idx": 42,
+                        "uri": "https://issuer.eudiw.dev/token_status_list/FC/urn:eudi:pid:1/another-list-id",
+                        "validation_context": "PIDStatus"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Status check completed successfully. For single-check mode, inspect the `valid` field — a `200` does **not** imply the token is valid, only that the check itself succeeded. For batch mode, inspect each item's `valid` or `error` field independently — a `200` only means the batch request itself was well-formed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/StatusResponse" },
+                    { "$ref": "#/components/schemas/BatchStatusResponse" }
+                  ]
+                },
+                "examples": {
+                  "single": {
+                    "summary": "Single check result",
+                    "value": {
+                      "valid": true,
+                      "status": 0,
+                      "status_description": "VALID",
+                      "cached": true
+                    }
+                  },
+                  "batch": {
+                    "summary": "Batch check result",
+                    "value": {
+                      "results": [
+                        {
+                          "index": 0,
+                          "valid": true,
+                          "status": 0,
+                          "status_description": "VALID",
+                          "cached": true,
+                          "status_code": 200
+                        },
+                        {
+                          "index": 1,
+                          "error": "Certificate chain in Status List Token was rejected by the trust validator",
+                          "status_code": 403
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request — missing or invalid fields, index out of range, or (for batch mode) an empty or oversized `checks` array.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "missing_fields": {
+                    "summary": "Missing required fields",
+                    "value": {
+                      "error": "'idx', 'uri', and 'validation_context' are all required"
+                    }
+                  },
+                  "out_of_range": {
+                    "summary": "Index out of range",
+                    "value": {
+                      "error": "Index 999999 is out of range for this Status List (list covers indices 0–65535)"
+                    }
+                  },
+                  "batch_size": {
+                    "summary": "Batch too large",
+                    "value": {
+                      "error": "'checks' cannot exceed 100 items"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Trust validation failed — the `x5c` certificate chain in the Status List Token JWT was rejected by the trust validator. Applies to single-check mode only; in batch mode this is reported per-item with a `200` overall.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "default": {
+                    "value": {
+                      "error": "Certificate chain in Status List Token was rejected by the trust validator"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream error — could not fetch the Status List Token from the issuer, or the JWT failed signature/claim verification. Applies to single-check mode only; in batch mode this is reported per-item with a `200` overall.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "default": {
+                    "value": {
+                      "error": "HTTP error fetching status list from https://issuer.example.com/status/1: 503 Server Error"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Health check",
+        "description": "Returns `200 OK` when the service is running. Suitable for use as a Docker / load-balancer health probe.",
+        "operationId": "healthCheck",
+        "responses": {
+          "200": {
+            "description": "Service is healthy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                },
+                "examples": {
+                  "default": {
+                    "value": {
+                      "status": "ok"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "StatusRequest": {
+        "type": "object",
+        "required": ["idx", "uri", "validation_context"],
+        "properties": {
+          "idx": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based index of the Referenced Token within the Status List.",
+            "example": 8577
+          },
+          "uri": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL of the Status List Token endpoint. Must be an HTTP or HTTPS URL.",
+            "example": "https://issuer.eudiw.dev/token_status_list/FC/urn:eudi:pid:1/0d703108-0546-44df-99ee-b0bcc4b42b33"
+          },
+          "validation_context": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Context string used by the trust validator to evaluate the certificate chain (e.g. a trust anchor or policy identifier). Must be a non-empty string.",
+            "example": "PIDStatus"
+          }
+        },
+        "example": {
+          "idx": 8577,
+          "uri": "https://issuer.eudiw.dev/token_status_list/FC/urn:eudi:pid:1/0d703108-0546-44df-99ee-b0bcc4b42b33",
+          "validation_context": "PIDStatus"
+        }
+      },
+      "BatchStatusRequest": {
+        "type": "object",
+        "required": ["checks"],
+        "properties": {
+          "checks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "description": "List of individual status checks to perform. Each item has the same shape as a single StatusRequest.",
+            "items": {
+              "$ref": "#/components/schemas/StatusRequest"
+            }
+          }
+        },
+        "example": {
+          "checks": [
+            {
+              "idx": 8577,
+              "uri": "https://issuer.eudiw.dev/token_status_list/FC/urn:eudi:pid:1/0d703108-0546-44df-99ee-b0bcc4b42b33",
+              "validation_context": "PIDStatus"
+            },
+            {
+              "idx": 42,
+              "uri": "https://issuer.eudiw.dev/token_status_list/FC/urn:eudi:pid:1/another-list-id",
+              "validation_context": "PIDStatus"
+            }
+          ]
+        }
+      },
+      "StatusResponse": {
+        "type": "object",
+        "properties": {
+          "valid": {
+            "type": "boolean",
+            "description": "true only when the status value is 0x00 (VALID)."
+          },
+          "status": {
+            "type": "integer",
+            "description": "Raw integer status value extracted from the Status List.\n\n| Value | Meaning |\n|---|---|\n| 0 | VALID |\n| 1 | INVALID (revoked) |"
+          },
+          "status_description": {
+            "type": "string",
+            "enum": ["VALID", "INVALID"],
+            "description": "Human-readable label for the status value."
+          },
+          "cached": {
+            "type": "boolean",
+            "description": "true if the Status List was served from the in-memory/Redis cache rather than fetched live from the issuer."
+          }
+        },
+        "example": {
+          "valid": false,
+          "status": 1,
+          "status_description": "INVALID",
+          "cached": true
+        }
+      },
+      "BatchStatusResultItem": {
+        "type": "object",
+        "description": "Result of a single check within a batch. Either the StatusResponse fields are present (success) or `error` is present (failure) — never both.",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "Zero-based position of this check within the original `checks` array, for correlating results back to requests."
+          },
+          "status_code": {
+            "type": "integer",
+            "description": "The HTTP status code that would have been returned had this check been made individually (200, 400, 403, or 502)."
+          },
+          "valid": {
+            "type": "boolean",
+            "description": "Present on success. true only when the status value is 0x00 (VALID)."
+          },
+          "status": {
+            "type": "integer",
+            "description": "Present on success. Raw integer status value extracted from the Status List (0 = VALID, 1 = INVALID)."
+          },
+          "status_description": {
+            "type": "string",
+            "enum": ["VALID", "INVALID"],
+            "description": "Present on success. Human-readable label for the status value."
+          },
+          "cached": {
+            "type": "boolean",
+            "description": "Present on success. true if served from cache."
+          },
+          "error": {
+            "type": "string",
+            "description": "Present on failure. Human-readable error message for this specific check."
+          }
+        },
+        "example": {
+          "index": 1,
+          "error": "Certificate chain in Status List Token was rejected by the trust validator",
+          "status_code": 403
+        }
+      },
+      "BatchStatusResponse": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchStatusResultItem"
+            }
+          }
+        },
+        "example": {
+          "results": [
+            {
+              "index": 0,
+              "valid": true,
+              "status": 0,
+              "status_description": "VALID",
+              "cached": true,
+              "status_code": 200
+            },
+            {
+              "index": 1,
+              "error": "Certificate chain in Status List Token was rejected by the trust validator",
+              "status_code": 403
+            }
+          ]
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Human-readable error message."
+          }
+        },
+        "example": {
+          "error": "'idx', 'uri', and 'validation_context' are all required"
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          }
+        }
+      }
+    }
+  }
+}
