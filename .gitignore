@@ -9,6 +9,7 @@ instance/
 htmlcov/
 .coverage
 .coverage.*
+coverage.xml
 
 # ==========================================
 # Python Bytecode & Cache

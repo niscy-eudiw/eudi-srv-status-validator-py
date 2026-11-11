@@ -58,12 +58,12 @@ def status_check():
     Check the validity of one or more Referenced Tokens by status list index.
 
     Request JSON body (single check):
-        idx                 (int, required) – zero-based index of the token in the list.
-        uri                 (str, required) – URI of the Status List Token endpoint.
-        validation_context  (str, required) – context string required to perform trust validation.
+        idx                 (int, required) - zero-based index of the token in the list.
+        uri                 (str, required) - URI of the Status List Token endpoint.
+        validation_context  (str, required) - context string required to perform trust validation.
 
     Request JSON body (batch check):
-        checks (list, required) – list of objects, each with idx, uri, validation_context.
+        checks (list, required) - list of objects, each with idx, uri, validation_context.
         Example:
             {
                 "checks": [
@@ -73,12 +73,12 @@ def status_check():
             }
 
     Responses:
-        200  – Check(s) completed (token may still be invalid / revoked).
+        200  - Check(s) completed (token may still be invalid / revoked).
                For batch requests, each item carries its own per-item status/error;
                overall response is 200 as long as the batch itself was well-formed.
-        400  – Bad request (missing / wrong types, index out of range, empty batch).
-        403  – Trust validation failed (single-check mode only).
-        502  – Could not fetch or verify the Status List Token (single-check mode only).
+        400  - Bad request (missing / wrong types, index out of range, empty batch).
+        403  - Trust validation failed (single-check mode only).
+        502  - Could not fetch or verify the Status List Token (single-check mode only).
     """
     logger.info("Received request on POST /status")
 
@@ -174,7 +174,8 @@ def _validate_and_check(item, batch_index):
             400,
         )
 
-    if not isinstance(idx, int) or idx < 0:
+    # bool is a subclass of int: reject true/false explicitly.
+    if not isinstance(idx, int) or isinstance(idx, bool) or idx < 0:
         logger.warning(
             "Validation failed [batch_index=%s]: 'idx' must be a non-negative integer. "
             "Got value: %s (type: %s)",
@@ -231,7 +232,7 @@ def _validate_and_check(item, batch_index):
 
     except IndexOutOfRangeError as exc:
         logger.warning(
-            "Index out of range [batch_index=%s]: idx=%d uri=%s – Details: %s",
+            "Index out of range [batch_index=%s]: idx=%d uri=%s - Details: %s",
             batch_index,
             idx,
             uri,

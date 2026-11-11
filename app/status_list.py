@@ -16,7 +16,7 @@
 #
 ###############################################################################
 """
-Status List processing – draft-ietf-oauth-status-list-10.
+Status List processing - draft-ietf-oauth-status-list-10.
 
 Pipeline:
   1. Fetch the Status List Token JWT from the issuer URI.
@@ -27,7 +27,7 @@ Pipeline:
   6. Decompress the `lst` field and extract the bits at the requested index.
   7. Map the bit value to a human-readable status description.
 
-Status type values (§7.1 of draft-10):
+Status type values (section 7.1 of draft-10):
   0x00  VALID
   0x01  INVALID
 """
@@ -46,12 +46,16 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from app import config
+from app.http import new_session
 from app.trust import TrustValidationError, call_trust_validator
 
 logger = logging.getLogger(__name__)
 
+# Status List Tokens are fetched over kept-alive connections.
+HTTP = new_session()
+
 # ---------------------------------------------------------------------------
-# Public status type constants (§7.1)
+# Public status type constants (section 7.1)
 # ---------------------------------------------------------------------------
 STATUS_VALID = 0x00
 STATUS_INVALID = 0x01
@@ -62,6 +66,12 @@ _STATUS_LABELS: dict[int, str] = {
 }
 
 EXPECTED_TYP = "statuslist+jwt"
+
+# Signature algorithms accepted for a token signed with an x5c leaf key. The
+# header's 'alg' is untrusted input: HMAC and "none" are never accepted.
+ALLOWED_ALGS = frozenset(
+    {"ES256", "ES384", "ES512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "EdDSA"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +207,7 @@ def _decode_status_list(lst: str, bits: int, idx: int) -> int:
         )
         raise IndexOutOfRangeError(
             f"Index {idx} is out of range for this Status List "
-            f"(list covers indices 0–{total_alloc_indices - 1})"
+            f"(list covers indices 0-{total_alloc_indices - 1})"
         )
 
     mask = (1 << bits) - 1
@@ -214,6 +224,18 @@ def _compute_cache_ttl(payload: dict[str, Any]) -> int:
     """
     Determine the cache TTL for this Status List Token.
     """
+    ttl = _cache_ttl_claims(payload)
+    if "exp" in payload:
+        try:
+            # Never keep a token past its expiry, even when 'ttl' is longer.
+            ttl = min(ttl, max(int(payload["exp"]) - int(time.time()), 0))
+        except (ValueError, TypeError):
+            pass
+    return ttl
+
+
+def _cache_ttl_claims(payload: dict[str, Any]) -> int:
+    """TTL from the 'ttl' claim, else the time left before 'exp', else the default."""
     default_ttl: int = config.get("cache", "default_ttl", 300)
 
     if "ttl" in payload:
@@ -271,7 +293,9 @@ def check_status(uri: str, idx: int, validation_context: str) -> dict[str, Any]:
     """
     from app.cache import get_cache
 
-    cache = get_cache()
+    # Off by default: a cached list hides revocations until it expires.
+    cache = get_cache() if config.get("cache", "enabled", False) else None
+    cache_key = (uri, validation_context)
     logger.info(
         "Executing evaluation pipeline request for validation target - URI: %s, Index: %d",
         uri,
@@ -279,8 +303,10 @@ def check_status(uri: str, idx: int, validation_context: str) -> dict[str, Any]:
     )
 
     # 1. Try cache ----------------------------------------------------------
+    cached_payload = None
     try:
-        cached_payload = cache.get(uri)
+        if cache is not None:
+            cached_payload = cache.get(cache_key)
     except Exception as exc:
         logger.error(
             "Cache look-up subsystem exception: Internal error retrieving map key from memory. Error: %s",
@@ -309,7 +335,7 @@ def check_status(uri: str, idx: int, validation_context: str) -> dict[str, Any]:
         "Dispatching HTTP GET request to resource server endpoint location: %s", uri
     )
     try:
-        resp = requests.get(
+        resp = HTTP.get(
             uri,
             timeout=fetch_timeout,
             headers={"Accept": "application/statuslist+jwt, application/jwt"},
@@ -348,7 +374,7 @@ def check_status(uri: str, idx: int, validation_context: str) -> dict[str, Any]:
         )
         raise InvalidTokenError(f"Malformed JWT: {exc}") from exc
 
-    # 4. Validate JWT typ claim (§5.1) --------------------------------------
+    # 4. Validate JWT typ claim (section 5.1) --------------------------------------
     typ = unverified_header.get("typ", "")
     if str(typ).lower() != EXPECTED_TYP:
         logger.error(
@@ -395,6 +421,9 @@ def check_status(uri: str, idx: int, validation_context: str) -> dict[str, Any]:
             "Signature protocol exception: Cryptographic signature algorithm attribute 'alg' completely missing in JOSE header block."
         )
         raise InvalidTokenError("JWT header is missing the 'alg' field")
+    if alg not in ALLOWED_ALGS:
+        logger.error("Signature algorithm not accepted: %r", alg)
+        raise InvalidTokenError(f"JWT 'alg' {alg!r} is not an accepted signature algorithm")
 
     logger.debug(
         "Verifying token cryptographic payload footprint utilizing algorithm framework: %s",
@@ -441,8 +470,12 @@ def check_status(uri: str, idx: int, validation_context: str) -> dict[str, Any]:
             exc,
         )
         raise InvalidTokenError(f"Failed to decode Status List Token: {exc}") from exc
+    except pyjwt.exceptions.PyJWTError as exc:
+        # Any other rejection (iat in the future, unusable key, ...).
+        logger.error("Status List Token rejected: %s", exc)
+        raise InvalidTokenError(f"Status List Token rejected: {exc}") from exc
 
-    # 7. Validate `sub` matches the requested URI (§5.1) -------------------
+    # 7. Validate `sub` matches the requested URI (section 5.1) -------------------
     sub = payload.get("sub", "")
     if sub != uri:
         logger.warning(
@@ -452,20 +485,21 @@ def check_status(uri: str, idx: int, validation_context: str) -> dict[str, Any]:
         )
 
     # 8. Cache the verified payload ----------------------------------------
-    ttl = _compute_cache_ttl(payload)
-    try:
-        cache.set(uri, payload, ttl=ttl)
-        logger.info(
-            "Successfully added token payload for URI: %s to operational memory cache block (TTL: %ds)",
-            uri,
-            ttl,
-        )
-    except Exception as exc:
-        logger.error(
-            "Cache subsystem update exception: Failed to write entry to cache. Continuing logic flow. Error: %s",
-            exc,
-            exc_info=True,
-        )
+    if cache is not None:
+        ttl = _compute_cache_ttl(payload)
+        try:
+            cache.set(cache_key, payload, ttl=ttl)
+            logger.info(
+                "Successfully added token payload for URI: %s to operational memory cache block (TTL: %ds)",
+                uri,
+                ttl,
+            )
+        except Exception as exc:
+            logger.error(
+                "Cache subsystem update exception: Failed to write entry to cache. Continuing logic flow. Error: %s",
+                exc,
+                exc_info=True,
+            )
 
     # 9. Resolve the requested index ----------------------------------------
     return _resolve_index(payload, idx, cached=False)

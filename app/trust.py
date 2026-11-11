@@ -22,18 +22,76 @@ Calls the external trust-validation API to verify the x5c certificate
 chain extracted from a Status List Token JWT header.
 """
 
+import base64
+import hashlib
 import logging
+import threading
 import time
 
 import requests
+from cryptography import x509
 
 from app import config
+from app.http import new_session
 
 logger = logging.getLogger(__name__)
+
+# Trust validator calls reuse kept-alive connections.
+HTTP = new_session()
+
+# Positive answers of the trust validator: (endpoint, context, chain digest) ->
+# expiry (epoch seconds). Negative answers and errors are never cached, and the
+# status bits themselves are always fetched fresh.
+_trusted: dict[tuple[str, str | None, str], float] = {}
+_trusted_lock = threading.Lock()
 
 
 class TrustValidationError(Exception):
     """Raised when the trust validator rejects the certificate chain."""
+
+
+def clear_trust_cache() -> None:
+    """Forget every cached trust answer."""
+    with _trusted_lock:
+        _trusted.clear()
+
+
+def _chain_digest(chain: list[str]) -> str:
+    return hashlib.sha256("\n".join(chain).encode()).hexdigest()
+
+
+def _leaf_not_after(chain: list[str]) -> float | None:
+    """Expiry of the leaf certificate (epoch seconds), or None if it cannot be read."""
+    try:
+        leaf = x509.load_der_x509_certificate(base64.b64decode(chain[0]))
+    except Exception:
+        return None
+    return leaf.not_valid_after_utc.timestamp()
+
+
+def _is_cached_trusted(key: tuple[str, str | None, str]) -> bool:
+    with _trusted_lock:
+        expiry = _trusted.get(key)
+        if expiry is None:
+            return False
+        if time.time() >= expiry:
+            del _trusted[key]
+            return False
+        return True
+
+
+def _remember_trusted(key: tuple[str, str | None, str], chain: list[str], ttl: int, max_size: int) -> None:
+    """Caches a positive answer for ``ttl`` seconds, never past the leaf's expiry."""
+    not_after = _leaf_not_after(chain)
+    if not_after is None:
+        return
+    expiry = min(time.time() + ttl, not_after)
+    if expiry <= time.time():
+        return
+    with _trusted_lock:
+        if key not in _trusted and len(_trusted) >= max_size:
+            del _trusted[min(_trusted, key=_trusted.__getitem__)]
+        _trusted[key] = expiry
 
 
 def call_trust_validator(
@@ -75,6 +133,12 @@ def call_trust_validator(
         )
         return False
 
+    cache_ttl: int = trust_cfg.get("cache_ttl", 300)
+    cache_key = (endpoint, ctx, _chain_digest(chain))
+    if cache_ttl > 0 and _is_cached_trusted(cache_key):
+        logger.debug("Trust validator answer served from cache [Context: %s]", ctx)
+        return True
+
     payload = {
         "chain": chain,
         "verificationContext": ctx,
@@ -97,7 +161,7 @@ def call_trust_validator(
 
     start_time = time.perf_counter()
     try:
-        response = requests.post(
+        response = HTTP.post(
             endpoint,
             json=payload,
             headers=headers,
@@ -178,4 +242,6 @@ def call_trust_validator(
         "Finalized trust status payload conversion context evaluation. Outcome: %s",
         trusted,
     )
+    if trusted and cache_ttl > 0:
+        _remember_trusted(cache_key, chain, cache_ttl, trust_cfg.get("cache_max_size", 256))
     return trusted

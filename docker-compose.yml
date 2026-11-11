@@ -1,0 +1,15 @@
+services:
+  status_validator:
+    image: ghcr.io/eu-digital-identity-wallet/eudi-srv-status-validator-py:latest
+    # host:container; the container listens on 5000 (5004 on the host, so it
+    # runs next to the issuer services on 5000-5002).
+    ports:
+      - "5004:5000"
+    # Without CONFIG_PATH the image uses its built-in config.yaml. The mounted
+    # file sets trust_validator.url, the cache and fetch timeouts and logging.
+    environment:
+      CONFIG_PATH: /etc/status_validator_config/config.yaml
+    volumes:
+      - /etc/status_validator_config/config.yaml:/etc/status_validator_config/config.yaml:ro
+    # The cache is in memory: every container keeps its own.
+    restart: unless-stopped

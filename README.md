@@ -16,7 +16,9 @@ Given an index (`idx`), a status list URI (`uri`), and a `validation_context`, t
 4. Verifies the JWT signature using the leaf certificate's public key.
 5. Decompresses the `lst` field and reads the bit at position `idx`.
 6. Returns whether the token is valid or invalid (revoked).
-7. Caches the verified Status List in memory (TTL driven by the JWT's `ttl`/`exp` claims).
+7. Can cache the verified Status List in memory when `cache.enabled` is set (off by default; TTL driven by the JWT's `ttl`/`exp` claims).
+
+Trust validator answers that accept a chain are reused for `trust_validator.cache_ttl` seconds (default 300) per chain and `validation_context`; the list itself is fetched on every check.
 
 Multiple checks can also be submitted in a single request via a `checks` array (batch mode, capped at 100 items (default)), with each item processed independently and returned with its own per-item result.
 

@@ -5,14 +5,23 @@ server:
   max_batch_size: 100
 
 cache:
+  # Cache of verified Status List Tokens. Off by default: while a list is cached,
+  # a token revoked in it is still reported valid (up to the TTL).
+  enabled: false
   # Default TTL in seconds if the Status List Token has no `ttl` or `exp` claim
-  default_ttl: 43200
+  default_ttl: 300
   # Maximum number of Status List URIs to keep in memory
   max_size: 512
 
 trust_validator:
   url: "https://trust-validator.eudiw.dev/trust"
   timeout: 10
+  # Seconds a "trusted" answer is reused for the same chain and validation
+  # context (never past the leaf certificate's expiry); 0 disables it.
+  # Rejections and errors are never cached; the status bits are always fetched.
+  cache_ttl: 300
+  # Maximum number of cached trust answers
+  cache_max_size: 256
 
 fetch:
   # HTTP timeout when retrieving the Status List Token JWT from the issuer

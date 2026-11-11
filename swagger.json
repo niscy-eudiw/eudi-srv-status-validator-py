@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Status List Validator",
-    "description": "Checks the validity of one or more Referenced Tokens against a Token Status List following draft-ietf-oauth-status-list-10.\n\nFlow\n1. Receive idx, uri, and validation_context (single check) or a list of such checks (batch).\n2. Fetch the Status List Token JWT from uri.\n3. Validate the x5c certificate chain via the configured trust validator, using validation_context.\n4. Verify the JWT signature using the leaf certificate public key.\n5. Decompress the lst field and extract the bit at position idx.\n6. Return whether the token is valid or invalid (revoked).\n\nResults are cached per URI (TTL driven by the JWT ttl/exp claims, default 12 h).",
+    "description": "Checks the validity of one or more Referenced Tokens against a Token Status List following draft-ietf-oauth-status-list-10.\n\nFlow\n1. Receive idx, uri, and validation_context (single check) or a list of such checks (batch).\n2. Fetch the Status List Token JWT from uri.\n3. Validate the x5c certificate chain via the configured trust validator, using validation_context.\n4. Verify the JWT signature using the leaf certificate public key.\n5. Decompress the lst field and extract the bit at position idx.\n6. Return whether the token is valid or invalid (revoked).\n\nResults can be cached per URI when cache.enabled is set (off by default; TTL driven by the JWT ttl/exp claims).",
     "version": "0.1.0",
     "contact": {
       "name": "EUDI Wallet Team"
